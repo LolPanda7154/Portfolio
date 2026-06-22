@@ -5,6 +5,24 @@ import { Html, Sky } from '@react-three/drei'
 import * as THREE from 'three'
 import { SECTIONS } from '../constants/sectionData'
 
+// Error boundary to catch R3F / drei render errors and show them instead of blank screen
+class SceneErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null } }
+  static getDerivedStateFromError(err) { return { error: err } }
+  render() {
+    if (this.state.error) {
+      return (
+        <Html center>
+          <div style={{ color: '#ff4444', fontFamily: 'monospace', fontSize: '12px', background: 'rgba(0,0,0,0.7)', padding: '16px', borderRadius: '8px', maxWidth: '320px' }}>
+            ⚠ Scene failed to load:<br />{String(this.state.error.message)}
+          </div>
+        </Html>
+      )
+    }
+    return this.props.children
+  }
+}
+
 const section = SECTIONS.find((s) => s.id === 'projects')
 const ACCENT = section?.color ?? '#00ff88'
 
@@ -56,6 +74,7 @@ const CHECKPOINT_POSITIONS = [
 
 // MINI-GAME: Each checkpoint has a 3-step "hack sequence" — small glowing pads
 // light up in a pattern, player must step on them in order within 8 seconds
+const HACK_TIME = 20 // seconds per hack sequence
 const HACK_SEQUENCES = [
   [0, 2, 1],   // pad indices for checkpoint 0
   [1, 0, 2],
@@ -142,7 +161,9 @@ function CrystalSpire({ position, color = '#aa44ff', scale = 1 }) {
   useFrame(({ clock }) => {
     if (ref.current) {
       ref.current.children.forEach((c, i) => {
-        c.material.emissiveIntensity = 0.5 + Math.sin(clock.getElapsedTime() * 1.5 + i * 0.8 + position[0]) * 0.25
+        if (c.material) {
+          c.material.emissiveIntensity = 0.5 + Math.sin(clock.getElapsedTime() * 1.5 + i * 0.8 + position[0]) * 0.25
+        }
       })
     }
   })
@@ -191,14 +212,17 @@ function VineCluster({ position, scale = 1 }) {
 }
 
 // Bioluminescent moss disc
-function MossDisc({ position, color = '#00ff88' }) {
+function MossDisc({ position, color = '#00ff88', seed = 0 }) {
   const ref = useRef()
+  // Stable pseudo-random values derived from seed/position instead of Math.random() in render
+  const rotation = useMemo(() => ((seed * 1.618 + position[0] * 0.37) % 1) * Math.PI, [seed, position])
+  const radius = useMemo(() => 0.4 + ((seed * 0.731 + position[2] * 0.19) % 1) * 0.3, [seed, position])
   useFrame(({ clock }) => {
     if (ref.current) ref.current.material.emissiveIntensity = 0.25 + Math.sin(clock.getElapsedTime() * 0.9 + position[0]) * 0.12
   })
   return (
-    <mesh ref={ref} position={position} rotation={[-Math.PI / 2, 0, Math.random() * Math.PI]}>
-      <circleGeometry args={[0.4 + Math.random() * 0.3, 8]} />
+    <mesh ref={ref} position={position} rotation={[-Math.PI / 2, 0, rotation]}>
+      <circleGeometry args={[radius, 8]} />
       <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.3} roughness={0.9} transparent opacity={0.8} />
     </mesh>
   )
@@ -253,19 +277,44 @@ function HackPad({ position, padIndex, isActive, isCompleted, onStep }) {
   useFrame(({ clock }) => {
     if (!ref.current) return
     if (isActive) {
-      ref.current.material.emissiveIntensity = 0.6 + Math.sin(clock.getElapsedTime() * 8) * 0.4
+      // Very intense rapid pulse so active pad is impossible to miss
+      ref.current.material.emissiveIntensity = 1.8 + Math.sin(clock.getElapsedTime() * 12) * 0.8
+      ref.current.material.color.set('#ffffff')
+      ref.current.material.emissive.set('#ffffff')
     } else if (isCompleted) {
-      ref.current.material.emissiveIntensity = 0.8
+      ref.current.material.emissiveIntensity = 1.2
+      ref.current.material.color.set('#00ffcc')
+      ref.current.material.emissive.set('#00ffcc')
     } else {
-      ref.current.material.emissiveIntensity = 0.1
+      ref.current.material.emissiveIntensity = 0.08
+      ref.current.material.color.set('#1a2233')
+      ref.current.material.emissive.set('#1a2233')
     }
   })
-  const col = isCompleted ? '#00ffcc' : isActive ? '#ffffff' : '#334466'
   return (
-    <mesh ref={ref} position={position} rotation={[-Math.PI / 2, 0, 0]} onClick={onStep}>
-      <circleGeometry args={[0.55, 6]} />
-      <meshStandardMaterial color={col} emissive={col} emissiveIntensity={0.1} roughness={0.3} />
-    </mesh>
+    <group position={position}>
+      {/* Main pad disc */}
+      <mesh ref={ref} rotation={[-Math.PI / 2, 0, 0]} onClick={onStep}>
+        <circleGeometry args={[isActive ? 0.72 : 0.55, 8]} />
+        <meshStandardMaterial
+          color={isCompleted ? '#00ffcc' : isActive ? '#ffffff' : '#1a2233'}
+          emissive={isCompleted ? '#00ffcc' : isActive ? '#ffffff' : '#1a2233'}
+          emissiveIntensity={isActive ? 2.0 : isCompleted ? 1.2 : 0.08}
+          roughness={0.2}
+          toneMapped={false}
+        />
+      </mesh>
+      {/* Glow ring around active pad */}
+      {isActive && (
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.01, 0]}>
+          <ringGeometry args={[0.72, 1.05, 16]} />
+          <meshBasicMaterial color="#ffffff" transparent opacity={0.35} side={THREE.DoubleSide} depthWrite={false} toneMapped={false} />
+        </mesh>
+      )}
+      {/* Strong point light under active pad so it lights the terrain */}
+      {isActive && <pointLight color="#ffffff" intensity={4} distance={5} position={[0, 0.5, 0]} />}
+      {isCompleted && <pointLight color="#00ffcc" intensity={1.5} distance={3} position={[0, 0.5, 0]} />}
+    </group>
   )
 }
 
@@ -274,30 +323,30 @@ function HackCheckpoint({ position, projData, isVisited, onCollect, beaconColor 
   const beaconRef = useRef()
   const [hackState, setHackState] = useState('idle') // idle | playing | success | fail
   const [currentStep, setCurrentStep] = useState(0)
-  const [timeLeft, setTimeLeft] = useState(8)
+  const [timeLeft, setTimeLeft] = useState(HACK_TIME)
   const [completedPads, setCompletedPads] = useState([])
   const [showGame, setShowGame] = useState(false)
   const sequence = HACK_SEQUENCES[projData.id]
-  const ballNearRef = useRef(false)
 
-  // Pad positions relative to checkpoint
-  const padOffsets = [
+  // Stable pad positions — avoids new Vector3 allocations every render
+  const padOffsets = useMemo(() => [
     new THREE.Vector3(position.x - 1.8, position.y - 0.28, position.z),
     new THREE.Vector3(position.x, position.y - 0.28, position.z - 1.8),
     new THREE.Vector3(position.x + 1.8, position.y - 0.28, position.z),
-  ]
+  ], [position])
 
   useEffect(() => {
-    if (hackState !== 'playing') return
+    if (hackState !== 'playing' || !showGame) return
     if (timeLeft <= 0) { setHackState('fail'); return }
     const t = setInterval(() => setTimeLeft(tl => tl - 0.1), 100)
     return () => clearInterval(t)
-  }, [hackState, timeLeft])
+  }, [hackState, timeLeft, showGame])
 
-  useFrame(() => {
+  useFrame(({ clock }) => {
     if (beaconRef.current) {
       beaconRef.current.rotation.y += 0.025
-      beaconRef.current.position.y = position.y + 0.9 + Math.sin(Date.now() * 0.002) * 0.15
+      // Animate Y on the group's position directly (group has no declarative position prop)
+      beaconRef.current.position.y = 0.9 + Math.sin(clock.getElapsedTime() * 2) * 0.15
     }
   })
 
@@ -305,7 +354,7 @@ function HackCheckpoint({ position, projData, isVisited, onCollect, beaconColor 
     if (isVisited || hackState === 'playing') return
     setHackState('playing')
     setCurrentStep(0)
-    setTimeLeft(8)
+    setTimeLeft(HACK_TIME)
     setCompletedPads([])
     setShowGame(true)
   }
@@ -348,11 +397,15 @@ function HackCheckpoint({ position, projData, isVisited, onCollect, beaconColor 
         <cylinderGeometry args={[0.035, 0.035, 5.6, 7]} />
         <meshBasicMaterial color={color} transparent opacity={isVisited ? 0.1 : 0.38} />
       </mesh>
-      {/* Octahedron beacon */}
-      <mesh ref={beaconRef} position={[position.x, position.y + 0.9, position.z]} castShadow>
-        <octahedronGeometry args={[0.38, 0]} />
-        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={isVisited ? 0.3 : 1.8} roughness={0.1} metalness={0.7} transparent opacity={isVisited ? 0.45 : 0.95} />
-      </mesh>
+      {/* Octahedron beacon - anchor at xz, animate y+rotation on inner ref group */}
+      <group position={[position.x, position.y, position.z]}>
+        <group ref={beaconRef}>
+          <mesh castShadow>
+            <octahedronGeometry args={[0.38, 0]} />
+            <meshStandardMaterial color={color} emissive={color} emissiveIntensity={isVisited ? 0.3 : 1.8} roughness={0.1} metalness={0.7} transparent opacity={isVisited ? 0.45 : 0.95} />
+          </mesh>
+        </group>
+      </group>
       <pointLight position={[position.x, position.y + 1, position.z]} color={color} intensity={isVisited ? 0.4 : 2.2} distance={7} />
 
       {/* Hack pads */}
@@ -384,15 +437,18 @@ function HackCheckpoint({ position, projData, isVisited, onCollect, beaconColor 
               </div>
             )}
             {hackState === 'playing' && (
-              <div style={{ background: 'rgba(0,10,20,0.8)', padding: '6px 10px', borderRadius: '4px', border: `1px solid ${beaconColor}66` }}>
-                <div style={{ fontSize: '7px', color: beaconColor, letterSpacing: '0.2em', marginBottom: '2px' }}>
-                  STEP {currentStep + 1}/{sequence.length}
+              <div style={{ background: 'rgba(0,10,20,0.88)', padding: '8px 12px', borderRadius: '4px', border: `1px solid ${beaconColor}66`, minWidth: '100px' }}>
+                <div style={{ fontSize: '8px', color: beaconColor, letterSpacing: '0.2em', marginBottom: '4px', textAlign: 'center' }}>
+                  STEP {currentStep + 1} / {sequence.length}
                 </div>
-                <div style={{ width: '60px', height: '3px', background: '#333', borderRadius: '2px' }}>
-                  <div style={{ height: '100%', width: `${(timeLeft / 8) * 100}%`, background: timeLeft > 3 ? beaconColor : '#ff4444', borderRadius: '2px', transition: 'width 0.1s' }} />
+                <div style={{ fontSize: '7px', color: '#ffffff', letterSpacing: '0.12em', textAlign: 'center', marginBottom: '6px', opacity: 0.9 }}>
+                  → STEP ON THE <span style={{ color: '#ffffff', fontWeight: 700 }}>BRIGHT PAD</span>
                 </div>
-                <div style={{ fontSize: '6px', color: 'rgba(255,255,255,0.5)', marginTop: '2px' }}>
-                  STEP ON GLOWING PAD
+                <div style={{ width: '80px', height: '4px', background: '#1a1a2e', borderRadius: '2px', margin: '0 auto' }}>
+                  <div style={{ height: '100%', width: `${(timeLeft / HACK_TIME) * 100}%`, background: timeLeft > 5 ? beaconColor : '#ff4444', borderRadius: '2px', transition: 'width 0.1s' }} />
+                </div>
+                <div style={{ fontSize: '6px', color: timeLeft > 5 ? 'rgba(255,255,255,0.4)' : '#ff6666', marginTop: '3px', textAlign: 'center', letterSpacing: '0.1em' }}>
+                  {Math.ceil(timeLeft)}s
                 </div>
               </div>
             )}
@@ -564,7 +620,7 @@ function VexScene({ keysRef, onCheckpoint, visitedRef, visited, onDamage, alienP
         <VineCluster key={i} position={[x, getTerrainHeight(x, z), z]} scale={sc} />
       ))}
       {MOSS.map(([x, z, col], i) => (
-        <MossDisc key={i} position={[x, getTerrainHeight(x, z) + 0.02, z]} color={col} />
+        <MossDisc key={i} position={[x, getTerrainHeight(x, z) + 0.02, z]} color={col} seed={i} />
       ))}
 
       {ALIENS.map((a, i) => (
@@ -665,7 +721,7 @@ function DeathScreen({ onRespawn }) {
   )
 }
 
-function GameHUD({ visitedCount, total }) {
+function GameHUD({ visitedCount, total, onHelp }) {
   return (
     <>
       <div style={{ position: 'fixed', bottom: '28px', right: '28px', fontFamily: "'Space Mono',monospace", fontSize: '10px', letterSpacing: '0.2em', color: '#6600aa', zIndex: 100, pointerEvents: 'none' }}>
@@ -675,7 +731,177 @@ function GameHUD({ visitedCount, total }) {
         W / S — MOVE &nbsp;·&nbsp; Q / E — ORBIT CAM<br />
         SPACE — JUMP &nbsp;·&nbsp; HACK BEACONS TO UNLOCK
       </div>
+      <button
+        onClick={onHelp}
+        title="Show tutorial"
+        style={{
+          position: 'fixed', bottom: '28px', left: '50%', transform: 'translateX(-50%)',
+          background: 'rgba(20,0,40,0.7)', border: '1px solid rgba(0,255,204,0.25)',
+          color: 'rgba(0,255,204,0.5)', fontFamily: "'Space Mono',monospace",
+          fontSize: '9px', letterSpacing: '0.2em', padding: '5px 14px',
+          cursor: 'pointer', zIndex: 100, borderRadius: '3px',
+          backdropFilter: 'blur(4px)',
+          transition: 'all 0.2s',
+        }}
+        onMouseEnter={e => { e.currentTarget.style.color = '#00ffcc'; e.currentTarget.style.borderColor = 'rgba(0,255,204,0.6)' }}
+        onMouseLeave={e => { e.currentTarget.style.color = 'rgba(0,255,204,0.5)'; e.currentTarget.style.borderColor = 'rgba(0,255,204,0.25)' }}
+      >
+        ? HELP
+      </button>
     </>
+  )
+}
+
+function TutorialOverlay({ onDismiss }) {
+  const [step, setStep] = useState(0)
+  const [exiting, setExiting] = useState(false)
+
+  const steps = [
+    {
+      icon: '🎮',
+      title: 'WELCOME TO PLANET VEX-9',
+      body: 'This planet holds 4 of my projects. Roll your ball across the volcanic terrain to find them.',
+      hint: null,
+    },
+    {
+      icon: '⌨️',
+      title: 'MOVEMENT',
+      body: null,
+      hint: [
+        { key: 'W / S', label: 'Move forward / back' },
+        { key: 'Q / E', label: 'Orbit camera left / right' },
+        { key: 'SPACE', label: 'Jump' },
+      ],
+    },
+    {
+      icon: '◆',
+      title: 'HACK THE BEACONS',
+      body: 'Find a glowing teal beacon and click HACK. Three pads will appear around it — step on the BRIGHTEST one first, then follow the sequence. You have 20 seconds.',
+      hint: null,
+    },
+    {
+      icon: '⚠',
+      title: 'WATCH THE ALIENS',
+      body: 'Purple angular aliens roam the terrain. Each hit drains your Signal Integrity. Avoid them or jump over them.',
+      hint: null,
+    },
+  ]
+
+  const advance = () => {
+    if (step < steps.length - 1) {
+      setStep(s => s + 1)
+    } else {
+      setExiting(true)
+      setTimeout(onDismiss, 400)
+    }
+  }
+
+  const current = steps[step]
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 500,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: 'rgba(5,0,15,0.82)',
+      backdropFilter: 'blur(6px)',
+      opacity: exiting ? 0 : 1,
+      transition: 'opacity 0.4s ease',
+      fontFamily: "'Space Mono', monospace",
+    }}>
+      <div style={{
+        width: 'min(480px, 90vw)',
+        background: 'linear-gradient(160deg, rgba(20,5,40,0.98) 0%, rgba(10,0,25,0.98) 100%)',
+        border: '1px solid rgba(0,255,204,0.3)',
+        borderRadius: '12px',
+        padding: '36px 40px',
+        boxShadow: '0 0 60px rgba(0,255,204,0.12), 0 0 120px rgba(102,0,170,0.2)',
+        position: 'relative',
+        overflow: 'hidden',
+      }}>
+        {/* Animated corner accent */}
+        <div style={{ position: 'absolute', top: 0, left: 0, width: '60px', height: '2px', background: 'linear-gradient(90deg, #00ffcc, transparent)' }} />
+        <div style={{ position: 'absolute', top: 0, left: 0, width: '2px', height: '60px', background: 'linear-gradient(180deg, #00ffcc, transparent)' }} />
+        <div style={{ position: 'absolute', bottom: 0, right: 0, width: '60px', height: '2px', background: 'linear-gradient(270deg, #aa44ff, transparent)' }} />
+        <div style={{ position: 'absolute', bottom: 0, right: 0, width: '2px', height: '60px', background: 'linear-gradient(0deg, #aa44ff, transparent)' }} />
+
+        {/* Step indicator */}
+        <div style={{ display: 'flex', gap: '6px', marginBottom: '28px' }}>
+          {steps.map((_, i) => (
+            <div key={i} style={{
+              height: '2px', flex: 1, borderRadius: '2px',
+              background: i <= step ? '#00ffcc' : 'rgba(255,255,255,0.12)',
+              transition: 'background 0.3s ease',
+            }} />
+          ))}
+        </div>
+
+        {/* Icon */}
+        <div style={{ fontSize: '28px', marginBottom: '14px', opacity: 0.9 }}>{current.icon}</div>
+
+        {/* Title */}
+        <div style={{ fontSize: '11px', letterSpacing: '0.3em', color: '#00ffcc', marginBottom: '16px', fontWeight: 700 }}>
+          {current.title}
+        </div>
+
+        {/* Body text */}
+        {current.body && (
+          <p style={{
+            fontFamily: "'Space Grotesk', sans-serif",
+            fontSize: '14px', color: 'rgba(232,244,255,0.75)',
+            lineHeight: 1.7, marginBottom: '28px', letterSpacing: '0.01em',
+          }}>
+            {current.body}
+          </p>
+        )}
+
+        {/* Key hint table */}
+        {current.hint && (
+          <div style={{ marginBottom: '28px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            {current.hint.map(({ key, label }) => (
+              <div key={key} style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+                <span style={{
+                  fontSize: '9px', letterSpacing: '0.15em', color: '#000',
+                  background: '#00ffcc', padding: '4px 10px', borderRadius: '3px',
+                  fontWeight: 700, minWidth: '80px', textAlign: 'center', whiteSpace: 'nowrap',
+                }}>
+                  {key}
+                </span>
+                <span style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: '13px', color: 'rgba(232,244,255,0.65)' }}>
+                  {label}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Navigation */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <button
+            onClick={() => { setExiting(true); setTimeout(onDismiss, 400) }}
+            style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.25)', cursor: 'pointer', fontSize: '9px', letterSpacing: '0.2em', fontFamily: "'Space Mono', monospace" }}
+          >
+            SKIP
+          </button>
+          <button
+            onClick={advance}
+            style={{
+              background: step === steps.length - 1 ? '#00ffcc' : 'transparent',
+              border: `1px solid ${step === steps.length - 1 ? '#00ffcc' : 'rgba(0,255,204,0.4)'}`,
+              color: step === steps.length - 1 ? '#000' : '#00ffcc',
+              fontFamily: "'Space Mono', monospace",
+              fontSize: '10px', letterSpacing: '0.25em',
+              padding: '10px 24px', cursor: 'pointer', borderRadius: '4px',
+              transition: 'all 0.25s ease',
+              fontWeight: step === steps.length - 1 ? 700 : 400,
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background = step === steps.length - 1 ? '#00ffcc' : 'rgba(0,255,204,0.12)' }}
+            onMouseLeave={e => { e.currentTarget.style.background = step === steps.length - 1 ? '#00ffcc' : 'transparent' }}
+          >
+            {step === steps.length - 1 ? 'ENTER VEX-9 →' : 'NEXT →'}
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -688,6 +914,7 @@ export default function ProjectsPage() {
   const [activePopup, setActivePopup] = useState(null)
   const [health, setHealth] = useState(100)
   const [isDead, setIsDead] = useState(false)
+  const [showTutorial, setShowTutorial] = useState(true)
 
   useEffect(() => {
     const down = (e) => {
@@ -727,23 +954,32 @@ export default function ProjectsPage() {
         <div style={{ fontSize: '9px', color: '#aa44ff', letterSpacing: '0.15em', marginTop: '2px' }}>PLANET VEX-9</div>
       </div>
 
-      <Canvas key={isDead ? 'dead' : 'alive'} camera={{ position: [0, 5, 12], fov: 60, near: 0.1, far: 500 }} shadows style={{ background: '#1a0030' }}>
-        <Suspense fallback={null}>
-          <VexScene
-            keysRef={keysRef}
-            onCheckpoint={handleCheckpoint}
-            visitedRef={visitedRef}
-            visited={visited}
-            onDamage={handleDamage}
-            alienPositionsRef={alienPositionsRef}
-          />
+      <Canvas key={isDead ? 'dead' : 'alive'} camera={{ position: [0, 5, 12], fov: 60, near: 0.1, far: 500 }} shadows gl={{ antialias: true }} style={{ background: '#1a0030' }}>
+        <Suspense fallback={
+          <Html center>
+            <div style={{ color: '#aa44ff', fontFamily: 'monospace', fontSize: '11px', letterSpacing: '0.2em' }}>
+              LOADING VEX-9…
+            </div>
+          </Html>
+        }>
+          <SceneErrorBoundary>
+            <VexScene
+              keysRef={keysRef}
+              onCheckpoint={handleCheckpoint}
+              visitedRef={visitedRef}
+              visited={visited}
+              onDamage={handleDamage}
+              alienPositionsRef={alienPositionsRef}
+            />
+          </SceneErrorBoundary>
         </Suspense>
       </Canvas>
 
       <HealthBar health={health} />
-      <GameHUD visitedCount={visited.filter(Boolean).length} total={CHECKPOINT_POSITIONS.length} />
+      {!showTutorial && <GameHUD visitedCount={visited.filter(Boolean).length} total={CHECKPOINT_POSITIONS.length} onHelp={() => setShowTutorial(true)} />}
       {activePopup !== null && <ProjectPopup proj={PROJECTS[activePopup]} onClose={closePopup} />}
       {isDead && <DeathScreen onRespawn={handleRespawn} />}
+      {showTutorial && <TutorialOverlay onDismiss={() => setShowTutorial(false)} />}
     </div>
   )
 }
